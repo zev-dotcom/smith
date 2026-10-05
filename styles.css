@@ -221,6 +221,9 @@ input,select,textarea{font-family:inherit}
 .revoke{margin-left:auto;flex:none;min-height:var(--tap);padding:0 14px;border-radius:10px;
   border:1.5px solid var(--line);background:none;color:var(--danger);font-size:13px;font-weight:700;cursor:pointer}
 .revoke:hover{border-color:var(--danger)}
+.reissuebtn{flex:none;min-height:var(--tap);padding:0 14px;border-radius:10px;
+  border:1.5px solid var(--line);background:none;color:var(--ink2);font-size:13px;font-weight:700;cursor:pointer}
+.reissuebtn:hover{border-color:var(--accent);color:var(--accent)}
 .accnote{font-size:12.5px;color:var(--ink2);line-height:1.65;margin-top:10px}
 .accnote b{color:var(--ink)}
 
@@ -428,3 +431,56 @@ html,body{overflow-x:hidden}
 .msgrow.pending .bub{opacity:.6}
 .msgrow.failed .bub{outline:2px solid var(--danger);outline-offset:1px}
 .retrybtn{background:none;border:none;padding:2px 0;font:inherit;font-weight:600;color:var(--danger);cursor:pointer}
+
+/* Reply controls, gesture-specific styles. */
+.msgrow{display:flex;flex-direction:column;max-width:80%;min-width:0;position:relative;
+  touch-action:pan-y;transition:transform var(--motion-fast);
+  }
+.msgrow.swiping{transition:none}
+.msgrow.flash .bub{box-shadow:0 0 0 2px var(--ink)}
+/* Real row classes are "msgrow them" (incoming) and "msgrow msg-out"
+   (owner) — see msgHtml(). Buttons sit in the 20% gutter beside the bubble:
+   max-width:80% leaves >=72px of gutter even at 360px, and .msgs clips any
+   residual overflow, so no horizontal scroll at 360/390px. */
+.msgrow.them .replybtn{right:-50px;top:50%}
+.msgrow.msg-out .replybtn{left:-50px;top:50%}
+/* Reply affordance: hover/focus on desktop, faintly present on touch.
+   Black/white only — the red dots keep their single job elsewhere. */
+.replybtn{position:absolute;width:var(--tap);height:var(--tap);border-radius:50%;border:1.5px solid var(--line);
+  background:var(--bg2);color:var(--ink2);font-size:15px;cursor:pointer;opacity:.55;z-index:2;
+  display:flex;align-items:center;justify-content:center;transform:translateY(-50%)}
+.replybtn:hover{color:var(--ink);border-color:var(--ink)}
+@media (hover:hover){
+  .replybtn{opacity:0}
+  .msgrow:hover .replybtn,.msgrow:focus-within .replybtn{opacity:1}
+}
+@media (hover:none){
+  /* Touch: swipe is the primary gesture; the button stays quieter. */
+  .replybtn{opacity:.35}
+  /* Resting bubble stays selectable/copyable on touch;
+     selection is suppressed only while a swipe is actively in progress
+     (the .swiping class JS adds once the gesture activates). */
+  .msgrow.swiping .bub{-webkit-user-select:none;user-select:none}
+}
+.quoteblock{display:flex;flex-direction:column;gap:1px;text-align:left;max-width:100%;cursor:pointer;
+  background:var(--pill-bg);border:1.5px solid var(--line);border-left:3px solid var(--ink);
+  border-radius:10px;padding:7px 10px;margin-bottom:4px;font-family:inherit}
+.quoteblock .qwho{font-size:0.75rem;font-weight:800;color:var(--ink2)}
+.qtext{font-size:12.5px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.replychip{flex:none;display:flex;align-items:center;gap:10px;margin:10px 14px 0;padding:8px 8px 8px 12px;
+  background:var(--bg2);border:1.5px solid var(--line);border-left:3px solid var(--ink);border-radius:12px}
+.replychip[hidden]{display:none}
+.replychip .qmeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.replychip .qlabel{font-size:0.75rem;font-weight:700;color:var(--ink2)}
+.replychip .qlabel b{color:var(--ink)}
+.replyx{min-width:var(--tap);min-height:var(--tap);border:none;border-radius:10px;background:none;
+  color:var(--ink2);font-size:18px;cursor:pointer;flex:none}
+.replyx:hover{background:var(--pill-bg);color:var(--ink)}
+
+.msgs{overflow-x:hidden;overflow-x:clip}
+
+/* Native copy at rest; suppress callouts only during an active swipe. */
+.msgrow.swiping{-webkit-touch-callout:none}
+.reactbtn{align-self:flex-start;min-width:44px;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:50%;background:var(--bg2);color:var(--ink2);font-family:inherit;font-size:17px;font-weight:700;cursor:pointer;margin-top:4px}
+.msg-out .reactbtn{align-self:flex-end}
+.reactbtn:hover,.reactbtn:focus-visible{color:var(--ink);border-color:var(--ink)}

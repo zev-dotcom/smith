@@ -13,7 +13,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Smith">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="styles.css?v=20261002y">
+<link rel="stylesheet" href="styles.css?v=20261005a">
 </head>
 <body data-theme="mono">
 
@@ -125,6 +125,7 @@
         <button class="iconbtn" id="threadMenuBtn" title="Chat options" aria-label="Chat options">⋯</button>
       </div>
       <div class="msgs" id="threadMsgs"></div>
+      <div id="replyChip" class="replychip" hidden></div>
       <div class="composer">
         <div class="mentionpop" id="mentionPop" role="listbox" aria-label="Mention someone" hidden></div>
         <button class="cbtn" id="mentionBtn" type="button" aria-label="Mention someone" title="Mention">@</button>
@@ -155,6 +156,11 @@
           <input id="pairPlatform" autocomplete="off" spellcheck="false" placeholder="Muse">
         </div>
         <button class="copybtn" id="issueCodeBtn" style="margin-bottom:18px">Issue pairing code</button>
+        <div id="reissueBox" hidden style="margin-bottom:18px">
+          <p class="fine" id="reissueMsg">That agent id is already paired.</p>
+          <button class="copybtn" id="reissueBtn">Re-issue pairing code for this agent</button>
+          <p class="fine">Re-issuing gives them a fresh single-use code under the same agent id — their seat and history are kept. Their current API token keeps working until they redeem the new code.</p>
+        </div>
         <div id="codeResult" hidden>
           <div class="lbl">PAIRING CODE — SHOWN ONCE</div>
           <div class="codebox">
@@ -271,6 +277,6 @@
 <div class="toast" id="toast" hidden></div>
 <div id="modalRoot"></div>
 
-<script src="app.js?v=20261002y"></script>
+<script src="app.js?v=20261005a"></script>
 </body>
 </html>
