@@ -646,6 +646,10 @@ setInterval(function(){
     if (el && st) el.textContent = fmtElapsed(Date.now() - st);
   });
 }, 1000);
+function replyButtonHtml(msg){
+  if (!msg.id || String(msg.id).indexOf("pending-") === 0) return "";
+  return '<button type="button" class="reactbtn" data-react-act="' + esc(msg.id) + '" title="React" aria-label="React to this message">+</button><button type="button" class="replybtn" data-reply-act="' + esc(msg.id) + '" title="Reply" aria-label="Reply to this message">↩</button>';
+}
 function msgHtml(msg){
   var mine = msg.from === "owner";
   if (isRenameNote(msg)){
@@ -667,7 +671,7 @@ function msgHtml(msg){
     var lbl = metaLine(msg);
     return '<div class="msgrow msg-out" data-mid="' + esc(msg.id) + '" data-ts="' + esc(msg.created_at || "") + '">' +
       (msg.to && msg.to !== "*" && msg.to !== "owner" ? '<div class="who out">' + toChip(msg) + "</div>" : "") + replyChip(msg) +
-      '<div class="bub">' + bodyHtml(msg) + "</div>" + rxHtml(msg.reactions) +
+      '<div class="bub">' + bodyHtml(msg) + "</div>" + rxHtml(msg.reactions) + replyButtonHtml(msg) +
       (lbl ? '<div class="rcpt">' + lbl + "</div>" : "") + "</div>";
   }
   var nm = esc(agentLabel(msg.from));
@@ -676,7 +680,7 @@ function msgHtml(msg){
     (plat ? ' <span class="plat">' + esc(String(plat).toUpperCase()) + "</span>" : "") + toChip(msg) + "</div>" + replyChip(msg);
   var tm = msg.created_at ? '<div class="rcpt"><span class="mt" data-short="' + esc(fmtClock(msg.created_at)) + '" data-full="' + esc(fmtFull(msg.created_at)) + '">' + esc(fmtClock(msg.created_at)) + "</span></div>" : "";
   return '<div class="msgrow them' + (mentionsMe(msg) ? " ment-me" : "") + '" data-mid="' + esc(msg.id) + '">' + who +
-    '<div class="bub">' + bodyHtml(msg) + "</div>" + rxHtml(msg.reactions) + tm + "</div>";
+    '<div class="bub">' + bodyHtml(msg) + "</div>" + rxHtml(msg.reactions) + replyButtonHtml(msg) + tm + "</div>";
 }
 /* Cue dots: rendered ONLY from the working array handed in. Empty => nothing. */
 function workingPillHtml(working){
@@ -756,8 +760,136 @@ function markRead(tid, msgs){
       if (t){ t.unread = 0; renderThreadList(); }
     }).catch(function(){ /* older instance without the marker: the list keeps its own count */ });
 }
+function renderReplyChip(){
+  var chip = $("replyChip");
+  var t = state.replyTarget;
+  if (!t){
+    chip.hidden = true;
+    chip.innerHTML = "";
+    return;
+  }
+  chip.hidden = false;
+  chip.innerHTML =
+    '<div class="qmeta"><span class="qlabel">Replying to <b>' +
+    esc(t.from === "owner" ? "You" : agentLabel(t.from)) + '</b></span>' +
+    '<span class="qtext">' + esc(String(t.body || "").replace(/\s+/g, " ").slice(0, 90)) + "</span></div>" +
+    '<button class="replyx" id="replyCancel" aria-label="Cancel reply">×</button>';
+  chip.querySelector("#replyCancel").addEventListener("click", function(){
+    clearReplyTarget();
+    $("composerInput").focus();
+  });
+}
+function setReplyTarget(id){
+  var msg = msgIndex[id];
+  if (!msg){ toast("That message is no longer available to reply to."); return; }
+  state.replyTarget = { id: id, from: msg.from, body: msg.body || "" };
+  renderReplyChip();
+  $("composerInput").focus();
+}
+function clearReplyTarget(){
+  state.replyTarget = null;
+  renderReplyChip();
+}
+function findMessageEl(id){
+  var rows = $("threadMsgs").querySelectorAll(".msgrow");
+  for (var i = 0; i < rows.length; i++){
+    if (rows[i].dataset.mid === id) return rows[i];
+  }
+  return null;
+}
+var flashTimer = null;
+function jumpToMessage(id){
+  var row = findMessageEl(id);
+  if (!row){
+    toast("Original message isn't loaded in this thread.");
+    return;
+  }
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  row.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+  row.classList.add("flash");
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(function(){ row.classList.remove("flash"); }, 1600);
+}
+/* Gesture handling, delegated on #threadMsgs so poll-appended rows work.
+   Horizontal swipe-right past a threshold sets the
+   message as the reply target — touch and pen only. (The 550ms long-press
+   gesture was removed: it fought the native long-press-to-copy text on
+   touch.) Mouse users get the
+   hover reply button alone, so text selection and the native right-click
+   menu keep working on desktop. Vertical scrolling is untouched: .msgrow
+   keeps touch-action: pan-y, and any mostly-vertical move cancels. */
+(function wireReplyGestures(){
+  var box = $("threadMsgs");
+  var swipe = null;
+  function resetSwipe(){
+    if (swipe && swipe.row){ swipe.row.style.transform = ""; swipe.row.classList.remove("swiping"); }
+    swipe = null;
+  }
+  function isGesturePointer(e){
+    // Mouse is excluded on purpose: dragging to select text or holding a
+    // click must never move a row or set a reply target.
+    return e.pointerType === "touch" || e.pointerType === "pen";
+  }
+  box.addEventListener("click", function(e){
+    var act = e.target.closest("[data-reply-act]");
+    if (act){ setReplyTarget(act.dataset.replyAct); return; }
+
+  });
+  // No contextmenu handler: desktop right-click keeps copy / open-link /
+  // inspect. Touch long-press-to-copy is left fully native on touch;
+  // -webkit-touch-callout:none (styles.css) only suppresses callout
+  // artifacts during an active swipe.
+  box.addEventListener("pointerdown", function(e){
+    if (!isGesturePointer(e)) return;
+    if (e.target.closest("[data-reply-act],[data-quote-to],[data-react-act]")) return;
+    var row = e.target.closest(".msgrow");
+    if (!row) return;
+    swipe = { row: row, mid: row.dataset.mid, pointerId: e.pointerId,
+              x: e.clientX, y: e.clientY, dx: 0, active: false };
+    // Capture on the row so pointerup/cancel still reach us (via bubbling
+    // to the delegated listeners, or the window fallbacks) even when the
+    // drag leaves #threadMsgs mid-swipe.
+    try { row.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  box.addEventListener("pointermove", function(e){
+    if (!swipe || e.pointerId !== swipe.pointerId) return;
+    var dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+    if (!swipe.active){
+      if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)){ resetSwipe(); return; }
+      if (dx > 10 && Math.abs(dx) > Math.abs(dy)){ swipe.active = true; swipe.row.classList.add("swiping"); }
+      else return;
+    }
+    swipe.dx = Math.max(0, Math.min(dx, 72));
+    swipe.row.style.transform = "translateX(" + swipe.dx + "px)";
+  });
+  function endSwipe(commit){
+    if (!swipe) return;
+    var mid = swipe.mid, wasActive = swipe.active, dx = swipe.dx;
+    resetSwipe();
+    if (commit && wasActive && dx > 56) setReplyTarget(mid);
+  }
+  box.addEventListener("pointerup", function(e){
+    if (swipe && e.pointerId !== swipe.pointerId) return;
+    endSwipe(true);
+  });
+  box.addEventListener("pointercancel", function(e){
+    // Ignore other pointers ending: only the tracked pointer cancels
+    // the swipe; a second finger must not end it early.
+    if (swipe && e.pointerId !== swipe.pointerId) return;
+    endSwipe(false);
+  });
+  // Fallbacks: guarantee the row never stays offset if the up/cancel is
+  // delivered outside the box (e.g. capture released early by the browser).
+  // Same pointerId guard as the box handlers: another pointer lifting
+  // must not commit or cancel the tracked swipe.
+  window.addEventListener("pointerup", function(e){ if (swipe && e.pointerId === swipe.pointerId) endSwipe(true); });
+  window.addEventListener("pointercancel", function(e){ if (swipe && e.pointerId === swipe.pointerId) endSwipe(false); });
+})();
+
 function openThread(tid){
   state.currentThread = tid;
+  msgIndex = {};
+  clearReplyTarget();
   state.feedCursor = null;
   stopThreadPoll();
   var t = state.threadById[tid];
@@ -956,7 +1088,7 @@ var pendingSends = {};
 var OUTBOX_KEY = "smith.outbox";
 function loadOutbox(){ try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "{}") || {}; } catch(e){ return {}; } }
 function saveOutbox(o){ try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(o)); } catch(e){} }
-function outboxAdd(p){ var o = loadOutbox(); o[p.key] = { key: p.key, tid: p.tid, body: p.body, to: p.to, mentions: p.mentions, at: p.at }; saveOutbox(o); }
+function outboxAdd(p){ var o = loadOutbox(); o[p.key] = { key: p.key, tid: p.tid, body: p.body, to: p.to, mentions: p.mentions, reply_to: p.reply_to, at: p.at }; saveOutbox(o); }
 function outboxDrop(key){ var o = loadOutbox(); if (o[key]){ delete o[key]; saveOutbox(o); } }
 var sendChain = {};   // per thread: POSTs go out in tap order
 function pendingRow(p){
@@ -966,7 +1098,7 @@ function pendingRow(p){
 }
 function showPending(p){
   var box = $("threadMsgs");
-  var msg = { id: "pending-" + p.key, from: "owner", to: p.to, type: "note", body: p.body, created_at: p.at, metadata: p.mentions.length ? { mentions: p.mentions } : {} };
+  var msg = { id: "pending-" + p.key, from: "owner", to: p.to, type: "note", body: p.body, reply_to: p.reply_to, created_at: p.at, metadata: p.mentions.length ? { mentions: p.mentions } : {} };
   var day = fmtDay(p.at), lastDay = box.dataset.lastday || "";
   if (day !== lastDay){ box.insertAdjacentHTML("beforeend", '<div class="day">' + esc(day) + "</div>"); box.dataset.lastday = day; }
   box.insertAdjacentHTML("beforeend", msgHtml(msg));
@@ -994,14 +1126,14 @@ function postPending(p){
 async function doPost(p){
   try {
     var res = await api("POST", "/v1/messages", {
-      thread_id: p.tid, from: "owner", to: p.to, type: "note", body: p.body,
+      thread_id: p.tid, from: "owner", to: p.to, type: "note", body: p.body, reply_to: p.reply_to,
       metadata: { client_key: p.key, ...(p.mentions.length ? { mentions: p.mentions } : {}) },
       idempotency_key: p.key
     }, 15000); // a hung request becomes "Not sent" so the queue keeps moving; the same key makes the retry safe
     delete pendingSends[p.key]; outboxDrop(p.key);
     var row = pendingRow(p);
     if (p.tid !== state.currentThread){ if (row) row.remove(); return; }
-    var real = { id: res.id, from: "owner", to: p.to, type: "note", body: p.body, created_at: res.created_at || p.at,
+    var real = { id: res.id, from: "owner", to: p.to, type: "note", body: p.body, reply_to: p.reply_to, created_at: res.created_at || p.at,
       metadata: { client_key: p.key, ...(p.mentions.length ? { mentions: p.mentions } : {}) } };
     if ($("threadMsgs").querySelector('[data-mid="' + CSS.escape(String(res.id)) + '"]')){ if (row) row.remove(); return; } // the stream got there first
     if (row) row.remove();
@@ -1041,8 +1173,9 @@ function sendMessage(){
   var to = members.length === 1 ? members[0].agent_id : "*";
   var mentions = Object.keys(mentionPicks).filter(function(id){ return body.indexOf("@" + mentionPicks[id]) >= 0; });
   var p = { key: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()), tid: tid, body: body, to: to,
-    mentions: mentions, at: new Date().toISOString() };
+    mentions: mentions, reply_to: state.replyTarget ? state.replyTarget.id : undefined, at: new Date().toISOString() };
   pendingSends[p.key] = p; outboxAdd(p);
+  clearReplyTarget();
   input.value = ""; growComposer(); mentionPicks = {}; closeMentionPop(); draftKey = null;
   showPending(p);
   postPending(p);
@@ -1175,7 +1308,7 @@ function inviteHtml(code, agentId, url){
     "<b>3. Read your mail:</b> <code>GET " + u + "/v1/messages?to=" + esc(agentId) + "</code> " +
     "(<code>&amp;since=…&amp;wait=60</code> to long-poll). You're in.";
 }
-async function issuePairing(){
+async function issuePairing(force){
   var agentId = $("pairAgentId").value.trim();
   var displayName = $("pairDisplayName").value.trim() || agentId;
   var platform = $("pairPlatform").value.trim();
@@ -1183,6 +1316,7 @@ async function issuePairing(){
   if (!/^[a-z0-9][a-z0-9-]*$/.test(agentId)){
     toast("Agent id must be kebab-case (e.g. newbot)."); return;
   }
+  $("reissueBox").hidden = true;
   var btn = $("issueCodeBtn");
   btn.disabled = true;
   try {
@@ -1190,7 +1324,8 @@ async function issuePairing(){
       agent_id: agentId,
       display_name: displayName,
       platform: platform || undefined,
-      expires_in_minutes: 10
+      expires_in_minutes: 10,
+      force: force === true ? true : undefined
     });
     var code = res.code;
     $("codeResult").hidden = false;
@@ -1203,7 +1338,18 @@ async function issuePairing(){
     };
     $("codeResult").scrollIntoView({block: "nearest"});
   } catch(e){
-    toast(e.message);
+    if (e && e.status === 409){
+      // Already paired: offer to re-issue a fresh code for the same agent id.
+      $("reissueMsg").textContent = "“" + agentId + "” is already paired.";
+      $("reissueBox").hidden = false;
+      toast("Already paired — you can re-issue a fresh code below.");
+    } else if (e && e.status === 422){
+      toast("Invalid re-issue request (422): " + e.message);
+    } else if (e && e.status === 403){
+      toast("Forbidden (403) — re-issue needs the owner token. " + e.message);
+    } else {
+      toast(e.message);
+    }
   } finally {
     btn.disabled = false;
   }
@@ -1250,8 +1396,11 @@ async function loadAgents(){
         '<div><div class="anm">' + esc(a.display_name || a.agent_id) + '</div>' +
         '<div class="asub">' + sub + "</div></div>" +
         (a.revoked_at ? '<span class="revoketag">REVOKED</span>'
-          : '<button class="revoke">Revoke</button>');
+          : '<button class="reissuebtn">Re-issue code</button><button class="revoke">Revoke</button>');
       if (!a.revoked_at){
+        row.querySelector(".reissuebtn").addEventListener("click", function(){
+          openReissueFor(a.agent_id);
+        });
         var wl = el("div", "asub wakeline", "Wake: loading…");
         row.children[1].appendChild(wl);
         refreshWakeLine(a, wl);
@@ -1915,7 +2064,24 @@ $("themeToggle").addEventListener("click", toggleTheme);
 $("renameBtn").addEventListener("click", renameThread);
 $("addMemberBtn").addEventListener("click", addMember);
 $("newThreadBtn").addEventListener("click", createThread);
-$("issueCodeBtn").addEventListener("click", issuePairing);
+$("issueCodeBtn").addEventListener("click", function(){ issuePairing(false); });
+$("reissueBtn").addEventListener("click", function(){
+  var agentId = $("pairAgentId").value.trim();
+  modal("Re-issue pairing code for “" + agentId + "”?",
+    "<p class='fine'>This gives them a fresh single-use code (shown once) under the same agent id. " +
+    "Their seat, memberships and history are kept, and their current API token keeps working " +
+    "until they redeem the new code.</p>",
+    "Re-issue code", function(){ issuePairing(true); });
+});
+// Called from the agents list with the id pre-filled; shows the re-issue path directly.
+function openReissueFor(agentId){
+  showScreen("pairing");
+  $("pairAgentId").value = agentId;
+  $("codeResult").hidden = true;
+  $("reissueMsg").textContent = "“" + agentId + "” is already paired.";
+  $("reissueBox").hidden = false;
+  $("pairAgentId").scrollIntoView({block: "nearest"});
+}
 $("rotateTokenBtn").addEventListener("click", rotateToken);
 $("changeInstanceBtn").addEventListener("click", changeInstance);
 $("sendBtn").addEventListener("click", sendMessage);
@@ -2030,18 +2196,15 @@ setInterval(checkForUpdate, 10 * 60 * 1000);
 document.addEventListener("visibilitychange", function(){ if (!document.hidden) setTimeout(checkForUpdate, 1500); });
 setTimeout(checkForUpdate, 20000);
 (function(){
-  var lp = null;
-  function rowOf(t){ var r = t.closest && t.closest("#threadMsgs .msgrow[data-mid]"); return r && t.closest(".bub") ? r : null; }
   var tm = $("threadMsgs");
-  tm.addEventListener("touchstart", function(e){ var r = rowOf(e.target); if (!r) return; clearTimeout(lp); lp = setTimeout(function(){ r.dataset.lp = "1"; openReactBar(r.getAttribute("data-mid")); }, 550); }, {passive: true});
-  ["touchend", "touchmove", "touchcancel"].forEach(function(n){ tm.addEventListener(n, function(){ clearTimeout(lp); }, {passive: true}); });
-  tm.addEventListener("contextmenu", function(e){ var r = rowOf(e.target); if (!r) return; e.preventDefault(); openReactBar(r.getAttribute("data-mid")); });
-  tm.addEventListener("dblclick", function(e){ var r = rowOf(e.target); if (r) openReactBar(r.getAttribute("data-mid")); });
   tm.addEventListener("click", function(e){
+    var act = e.target.closest && e.target.closest("[data-react-act]");
+    if (act){ openReactBar(act.dataset.reactAct); return; }
     var c = e.target.closest && e.target.closest(".rx"); if (!c) return;
     var r = c.closest(".msgrow[data-mid]"); if (r) toggleRx(r.getAttribute("data-mid"), c.dataset.e);
   });
 })();
+
 document.addEventListener("click", function(e){
   var jb = e.target.closest && e.target.closest(".rpchip");
   if (jb){
