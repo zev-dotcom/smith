@@ -704,7 +704,7 @@ function setWorking(working){
 }
 function appendMessages(msgs, opts){
   opts = opts || {};
-  var box = $("threadMsgs");
+  var box = opts.box || $("threadMsgs");
   var lastDay = box.dataset.lastday || "";
   msgs.forEach(function(m){
     // Concurrent polls (timer + send) can return the same message twice: render each id once.
@@ -901,10 +901,11 @@ function openThread(tid){
   showScreen("thread");
   var readMap = loadRead();
   var lastReadId = readMap[tid] || null;
-  api("GET", "/v1/owner/feed?thread_id=" + encodeURIComponent(tid) + "&limit=100")
+  api("GET", "/v1/owner/feed?thread_id=" + encodeURIComponent(tid) + "&limit=100&latest=1")
     .then(function(feed){
       var msgs = feed.messages || [];
       state.feedCursor = feed.next_cursor || null;
+      setOlderControl(feed);
       var idx = lastReadId ? msgs.findIndex(function(m){ return m.id === lastReadId; }) : -1;
       var firstUnread = idx >= 0 ? idx + 1 : 0;
       var nNew = msgs.length - firstUnread;
@@ -926,6 +927,50 @@ function openThread(tid){
       startThreadPoll();
     })
     .catch(function(e){ toast(e.message); });
+}
+/* Backward pagination: the feed opens on the newest 100 messages (latest=1); older history loads on demand. */
+function setOlderControl(feed){
+  var old = $("olderWrap"); if (old) old.remove();
+  state.olderCursor = feed && feed.has_older && feed.older_cursor ? feed.older_cursor : null;
+  if (!state.olderCursor) return;
+  $("threadMsgs").insertAdjacentHTML("afterbegin",
+    '<div class="olderwrap" id="olderWrap"><button type="button" class="olderbtn" id="loadOlder">Load earlier messages</button></div>');
+  $("loadOlder").addEventListener("click", loadOlder);
+}
+function prependMessages(msgs){
+  var box = $("threadMsgs");
+  var fresh = msgs.filter(function(m){
+    return !(m.id && box.querySelector('[data-mid="' + String(m.id).replace(/"/g, "") + '"]'));
+  });
+  if (!fresh.length) return;
+  var tmp = document.createElement("div");
+  tmp.dataset.lastday = "";
+  appendMessages(fresh, {box: tmp});
+  // The oldest day already on screen would get a second heading: keep one.
+  var firstDay = box.querySelector(".day"), lastNew = tmp.dataset.lastday;
+  if (firstDay && lastNew && firstDay.textContent === lastNew && box.firstElementChild === firstDay) firstDay.remove();
+  var frag = document.createDocumentFragment();
+  while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+  box.insertBefore(frag, box.firstChild);
+}
+function loadOlder(){
+  var tid = state.currentThread, cur = state.olderCursor, btn = $("loadOlder");
+  if (!tid || !cur || !btn || btn.disabled) return;
+  btn.disabled = true; btn.textContent = "Loading…";
+  api("GET", "/v1/owner/feed?thread_id=" + encodeURIComponent(tid) + "&limit=100&before=" + encodeURIComponent(cur))
+    .then(function(feed){
+      if (tid !== state.currentThread) return;
+      var box = $("threadMsgs"), h0 = box.scrollHeight, t0 = box.scrollTop;
+      var wrap = $("olderWrap"); if (wrap) wrap.remove();
+      prependMessages(feed.messages || []);
+      setOlderControl(feed);
+      // keep the message the reader was looking at in place
+      box.scrollTop = t0 + (box.scrollHeight - h0);
+    })
+    .catch(function(e){
+      var b = $("loadOlder"); if (b){ b.disabled = false; b.textContent = "Load earlier messages"; }
+      toast(e.message);
+    });
 }
 function pollThread(){
   var tid = state.currentThread;
@@ -2153,13 +2198,15 @@ function attachPTR(el, onRefresh){
 }
 attachPTR($("threadList"), function(){ return Promise.all([loadThreads(), loadAgents ? loadAgents().catch(function(){}) : null]); });
 attachPTR($("threadMsgs"), function(){
-  // Fetch the full history first, then swap it in: the stream or a poll can move feedCursor meanwhile, and a
-  // cleared view with a stale cursor would stay blank.
+  // Fetch the newest page first, then swap it in (older pages already loaded are dropped; "Load earlier
+  // messages" brings them back): the stream or a poll can move feedCursor meanwhile, and a cleared view
+  // with a stale cursor would stay blank.
   var tid = state.currentThread; if (!tid) return Promise.resolve();
-  return api("GET", "/v1/owner/feed?thread_id=" + encodeURIComponent(tid) + "&limit=100").then(function(feed){
+  return api("GET", "/v1/owner/feed?thread_id=" + encodeURIComponent(tid) + "&limit=100&latest=1").then(function(feed){
     if (tid !== state.currentThread) return;
     var msgs = feed.messages || [], box = $("threadMsgs");
     box.innerHTML = ""; box.dataset.lastday = "";
+    setOlderControl(feed);
     appendMessages(msgs);
     state.feedCursor = feed.next_cursor || state.feedCursor;
     box.scrollTop = box.scrollHeight;

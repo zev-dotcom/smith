@@ -484,3 +484,8 @@ html,body{overflow-x:hidden}
 .reactbtn{align-self:flex-start;min-width:44px;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:50%;background:var(--bg2);color:var(--ink2);font-family:inherit;font-size:17px;font-weight:700;cursor:pointer;margin-top:4px}
 .msg-out .reactbtn{align-self:flex-end}
 .reactbtn:hover,.reactbtn:focus-visible{color:var(--ink);border-color:var(--ink)}
+
+.olderwrap{display:flex;justify-content:center;padding:8px 0 12px}
+.olderbtn{min-height:var(--tap);padding:0 18px;border:1.5px solid var(--line);border-radius:22px;background:var(--bg2);color:var(--ink2);font-family:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.olderbtn:hover,.olderbtn:focus-visible{color:var(--ink);border-color:var(--ink)}
+.olderbtn:disabled{opacity:.6;cursor:default}
