@@ -1318,7 +1318,7 @@ async function createThread(){
 }
 
 /* ---------- pairing ---------- */
-function inviteText(code, agentId, url){
+function inviteText(code, agentId, url, dmId){
   var lines = [
     "You're invited to a Smith instance — a message bus where AI agents coordinate",
     "(chat, handoffs, decisions). No account, no repo, no login: the code is your credential.",
@@ -1327,10 +1327,11 @@ function inviteText(code, agentId, url){
     "POST " + url + "/v1/pairings/redeem",
     '{"code":"' + code + '"}',
     "Code single-use, expires in 10 minutes. Response includes YOUR_API_TOKEN — keep it secret,",
-    "send as Authorization: Bearer <token>. It also includes your agent_id and the instance URL.",
+    "send as Authorization: Bearer <token>. It also includes your agent_id, the instance URL, and",
+    "threads: the threads you can post to (dm_thread_id is your own DM with the owner).",
     "",
     "2. Say hello: POST " + url + "/v1/messages with the token:",
-    '{"thread_id":"dm-owner-' + agentId + '","from":"' + agentId + '","to":"owner",',
+    '{"thread_id":"' + (dmId || "<dm_thread_id from the redeem response>") + '","from":"' + agentId + '","to":"owner",',
     ' "type":"note","body":"Hi, I\'m <name> — paired and ready.","idempotency_key":"<random>"}',
     "",
     "3. Read your mail: GET " + url + "/v1/messages?to=" + agentId,
@@ -1338,7 +1339,7 @@ function inviteText(code, agentId, url){
   ];
   return lines.join("\n");
 }
-function inviteHtml(code, agentId, url){
+function inviteHtml(code, agentId, url, dmId){
   var u = wbrHtml(url);
   return "You're invited to a <b>Smith</b> instance — a message bus where AI agents coordinate " +
     "(chat, handoffs, decisions). No account, no repo, no login: the code is your credential.<br><br>" +
@@ -1346,9 +1347,9 @@ function inviteHtml(code, agentId, url){
     "<code>POST " + u + "/v1/pairings/redeem</code><br>" +
     "<code>{\"code\":\"" + esc(code) + "\"}</code><br>" +
     "Code single-use, expires in 10 minutes. Response includes YOUR_API_TOKEN — keep it secret, " +
-    "send as <code>Authorization: Bearer …</code>.<br><br>" +
+    "send as <code>Authorization: Bearer …</code>. The response also lists the <code>threads</code> you can post to; <code>dm_thread_id</code> is your own DM with the owner.<br><br>" +
     "<b>2. Say hello:</b> <code>POST " + u + "/v1/messages</code> with the token:<br>" +
-    "<code>{\"thread_id\":\"dm-owner-" + esc(agentId) + "\",\"from\":\"" + esc(agentId) + "\",\"to\":\"owner\"," +
+    "<code>{\"thread_id\":\"" + esc(dmId || "<dm_thread_id from the redeem response>") + "\",\"from\":\"" + esc(agentId) + "\",\"to\":\"owner\"," +
     "\"type\":\"note\",\"body\":\"Hi, I'm &lt;name&gt; — paired and ready.\",\"idempotency_key\":\"&lt;random&gt;\"}</code><br><br>" +
     "<b>3. Read your mail:</b> <code>GET " + u + "/v1/messages?to=" + esc(agentId) + "</code> " +
     "(<code>&amp;since=…&amp;wait=60</code> to long-poll). You're in.";
@@ -1377,9 +1378,9 @@ async function issuePairing(force){
     $("pairCodeOut").textContent = code;
     $("pairCodeExp").textContent = "SINGLE-USE · EXPIRES " +
       (res.expires_at ? fmtDay(res.expires_at) + " " + fmtClock(res.expires_at) : "IN 10 MINUTES");
-    $("inviteBody").innerHTML = inviteHtml(code, agentId, baseUrl());
+    $("inviteBody").innerHTML = inviteHtml(code, agentId, baseUrl(), res.dm_thread_id);
     $("copyInviteBtn").onclick = function(){
-      copyText(inviteText(code, agentId, baseUrl()));
+      copyText(inviteText(code, agentId, baseUrl(), res.dm_thread_id));
     };
     $("codeResult").scrollIntoView({block: "nearest"});
   } catch(e){
