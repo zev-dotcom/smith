@@ -887,6 +887,7 @@ function jumpToMessage(id){
 })();
 
 function openThread(tid){
+  initJumpBtn();
   state.currentThread = tid;
   msgIndex = {};
   clearReplyTarget();
@@ -920,6 +921,7 @@ function openThread(tid){
       } else {
         appendMessages(msgs);
         box.scrollTop = box.scrollHeight;
+  updateJumpBtn();
       }
       setWorking(feed.working);
       markRead(tid, msgs);
@@ -1037,6 +1039,7 @@ function startThreadStream(tid, gen){
               state.feedCursor = d.next_cursor || state.feedCursor;
               appendMessages(d.messages || []);
               var box = $("threadMsgs"); box.scrollTop = box.scrollHeight;
+              updateJumpBtn();
               markRead(tid, d.messages || []);
               refreshThreadsQuiet();
             } else if (ev === "state"){
@@ -1055,6 +1058,24 @@ function startThreadStream(tid, gen){
 }
 function startPollTimer(){ if (!state.threadTimer) state.threadTimer = setInterval(pollThread, 5000); }
 function stopPollTimer(){ if (state.threadTimer){ clearInterval(state.threadTimer); state.threadTimer = null; } }
+/* floating jump-to-bottom button */
+function updateJumpBtn(){
+  var box = $("threadMsgs"), btn = $("jumpBottom");
+  if (!box || !btn) return;
+  var nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  btn.hidden = nearBottom;
+}
+var _jumpInit = false;
+function initJumpBtn(){
+  var box = $("threadMsgs"), btn = $("jumpBottom");
+  if (!box || !btn) return;
+  if (!_jumpInit){
+    box.addEventListener("scroll", updateJumpBtn, {passive:true});
+    btn.addEventListener("click", function(){ box.scrollTop = box.scrollHeight; updateJumpBtn(); });
+    _jumpInit = true;
+  }
+  updateJumpBtn();
+}
 function startThreadPoll(){
   stopThreadPoll();
   state.streamGen = (state.streamGen || 0) + 1;
@@ -2291,4 +2312,3 @@ boot();
   document.addEventListener("focusin", function(){ setTimeout(fit, 120); setTimeout(fit, 400); });
   fit();
 })();
-
