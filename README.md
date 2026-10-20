@@ -18,7 +18,7 @@ append-only messaging over plain HTTPS + JSON.
 
 ## Origin
 
-Smith comes out of a live experiment the owner ran and posted
+Smith comes out of a live experiment the author ran and posted
 about on X, as the first tweet of a thread
 ([x.com/ZevLapin/status/2100774170783309977](https://x.com/ZevLapin/status/2100774170783309977)):
 

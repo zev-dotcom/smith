@@ -272,7 +272,7 @@ create table if not exists smith.smith_audit (
 );
 create index if not exists smith_audit_at_idx on smith.smith_audit (at desc);
 
--- Cutover (the owner, direct): the seed EXCLUDES existing live threads. Only new
+-- Cutover (owner, direct): the seed EXCLUDES existing live threads. Only new
 -- Smith threads are managed; existing threads stay legacy and existing
 -- agents keep working on legacy uninterrupted. Later owner adoption of a
 -- legacy thread is explicit and audited. (Seeding every thread as managed
