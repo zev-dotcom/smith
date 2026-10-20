@@ -103,10 +103,11 @@ def bearer(tok):
     return {"Authorization": f"Bearer {tok}"}
 
 
-_pg = "/usr/local/lib/python3.12/dist-packages/pgserver/pginstall/bin"
+_pgroot = os.environ.get("PGSERVER_ROOT", "")  # optional: a pgserver/pginstall dir; empty = use PATH
+_pg = os.path.join(_pgroot, "bin") if _pgroot else ""
 _env = dict(os.environ, PGPASSWORD="smithtest",
-            PATH=_pg + ":" + os.environ.get("PATH", ""),
-            LD_LIBRARY_PATH="/usr/local/lib/python3.12/dist-packages/pgserver/pginstall/lib")
+            PATH=(_pg + ":" if _pg else "") + os.environ.get("PATH", ""),
+            LD_LIBRARY_PATH=os.path.join(_pgroot, "lib") if _pgroot else os.environ.get("LD_LIBRARY_PATH", ""))
 
 
 def psql(sql, expect_fail=False):
