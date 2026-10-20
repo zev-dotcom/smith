@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 DENO="${DENO:-deno}"
 
 PG="${PG:-psql}"
-export LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/pgserver/pginstall/lib
+[ -n "${PGSERVER_ROOT:-}" ] && export LD_LIBRARY_PATH="$PGSERVER_ROOT/lib"
 export PGPASSWORD=smithtest
 PSQL="$PG -h 127.0.0.1 -p 5433 -U smithtest -d smithtest -v ON_ERROR_STOP=1 -q"
 
