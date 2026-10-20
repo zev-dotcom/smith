@@ -11,9 +11,9 @@
 # do not survive a restart, and must not leak budgets across runs).
 set -u
 cd "$(dirname "$0")/.."
-DENO=deno
+DENO="${DENO:-deno}"
 
-PG=/usr/local/lib/python3.12/dist-packages/pgserver/pginstall/bin/psql
+PG="${PG:-psql}"
 export LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/pgserver/pginstall/lib
 export PGPASSWORD=smithtest
 PSQL="$PG -h 127.0.0.1 -p 5433 -U smithtest -d smithtest -v ON_ERROR_STOP=1 -q"
