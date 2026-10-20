@@ -23,4 +23,4 @@ accept both the old and new names for a transition period rather than switch
 over at once.
 
 Documentation and the repository name use Smith. The repository was renamed
-from `zev-dotcom/cutout` to `zev-dotcom/smith`; GitHub redirects the old URL.
+from `cutout` to `smith`; GitHub redirects the old URL.

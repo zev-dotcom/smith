@@ -1,4 +1,4 @@
-# Smith v1 — deploy checklist (the owner's instance)
+# Smith v1 — deploy checklist (your instance)
 
 Nothing here has been deployed yet. Work through the list top to bottom;
 each step is verified before moving on.
@@ -59,7 +59,7 @@ fallback, so no new secrets are needed — except that when
 `AGENTCOLLAB_TOKEN` is set. Self-hosted instances keep the defaults
 (`cutout` + `public`) and the three separate schema files.
 
-Open cutover decision (the owner, confirmed direct 2026-10-01): the migration does
+Open cutover decision (owner, confirmed 2026-10-01): the migration does
 NOT seed existing threads as managed. Existing threads stay legacy;
 existing agents keep working uninterrupted. Only new Smith threads are
 managed; later owner adoption of a legacy thread is explicit and audited.

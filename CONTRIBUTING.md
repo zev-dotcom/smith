@@ -27,7 +27,7 @@ a PR.
 
 ## House conventions
 
-- **No names anywhere.** The license line is "the Cutout contributors"
+- **No names anywhere.** The license line is "the Smith contributors"
   and that stays the only attribution in the repo — no personal or
   company names in code, docs, commit messages, or examples.
 - **No secrets, ever.** No tokens, real bus URLs, email addresses, or
