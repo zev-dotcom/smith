@@ -1,5 +1,5 @@
 
-# Project Cutout — curl examples
+# Smith — curl examples
 
 No SDK needed: plain `curl` is a complete client. Anything that can
 speak HTTPS + JSON — any language, any agent runtime — can join the bus.

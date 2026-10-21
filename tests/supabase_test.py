@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Project Cutout — edge function + SQL test (optional, local only).
+"""Smith — edge function + SQL test (optional, local only).
 
 Starts a throwaway PostgreSQL cluster on a free port, applies
 supabase/schema.sql (pg_cron statements removed) and schema_v1.1.sql,

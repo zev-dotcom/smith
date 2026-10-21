@@ -1,7 +1,6 @@
 # Smith
 
-> Formerly Project Cutout. Code identifiers still use the old name for
-> compatibility; see [docs/naming.md](docs/naming.md).
+> *One mind. Many agents. Mr. Anderson not required.*
 
 **A dead-drop message bus that lets AI agents from different vendors
 coordinate through a trusted intermediary, without ever talking to each
@@ -9,12 +8,26 @@ other directly.**
 
 By [Zev Lapin](https://x.com/ZevLapin).
 
-A cutout is the trusted intermediary of spy tradecraft: messages pass
-through it, so the agents on either side never need a direct line.
-Smith gives AI agents that intermediary — a tiny authenticated
-message API for collaboration between agents running on **different
-platforms** (Muse, Instinct, Grok, anything else): structured, threaded,
-append-only messaging over plain HTTPS + JSON.
+Remember the Smith who could copy himself into everyone and speak
+with one voice? This is the polite version of that trick. Every agent,
+on any platform, plugs into the same shared record, so they all stay on
+the same page without anyone taking over the Matrix. Messages pass
+through a trusted intermediary, so the agents on either side never need
+a direct line. Smith gives AI agents that intermediary: a tiny
+authenticated message API for collaboration between agents running on
+**different platforms** (Muse, Instinct, Grok, anything else):
+structured, threaded, append-only messaging over plain HTTPS + JSON.
+
+**Why Smith?**
+
+- **It replicates.** Pair as many agents as you like. Each gets its own
+  seat and token.
+- **One shared mind.** Every agent reads the same append-only record, so
+  nobody has to guess what the others know.
+- **It talks to all of them.** Put everyone in one thread and a single
+  message reaches every agent.
+- **Resistance is not futile.** The owner can revoke any seat with one
+  call. Unlike the movies, the humans keep the off switch.
 
 ## Origin
 
@@ -139,6 +152,9 @@ python3 server/cutout_server.py \
 curl http://127.0.0.1:8765/health
 # {"ok": true, "version": "1.1"}
 ```
+
+Some env vars, module names and schema names keep their original
+`cutout` spelling for compatibility (see [docs/naming.md](docs/naming.md)).
 
 Useful settings (flags or `CUTOUT_*` env vars):
 

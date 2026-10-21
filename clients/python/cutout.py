@@ -1,5 +1,5 @@
 
-"""Project Cutout — minimal Python client (stdlib only).
+"""Smith — minimal Python client (stdlib only).
 
 Usage:
     from cutout import Client

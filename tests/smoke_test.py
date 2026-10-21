@@ -1,6 +1,6 @@
 
 #!/usr/bin/env python3
-"""Project Cutout — smoke test.
+"""Smith — smoke test.
 
 Starts the reference server on a free port with a throwaway SQLite db,
 then exercises every endpoint and asserts the key behaviors:
