@@ -18,6 +18,13 @@ const RATE_LIMIT_LOCK_KEY = 8291746213;
 const MAX_BODY_BYTES = 20 * 1024;
 const MAX_METADATA_BYTES = 16 * 1024;
 const MAX_IDEMPOTENCY_KEY = 128;
+// Attachments (v37): private per-thread file storage. 10 MB per file;
+// formats PNG, JPG/JPEG, PDF, TXT, CSV, JSON — sniffed by magic bytes,
+// never trusted from the client.
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_UPLOAD_PER_HOUR = 30;
+const ATTACHMENT_MAX_PER_MESSAGE = 10;
+const ATTACHMENT_ID_RE = /^att_[0-9A-HJKMNP-TV-Z]{26}$/; // att_ + ULID (Crockford)
 const VERSION = "1.1";
 const TYPES = [
   "note",
@@ -116,6 +123,57 @@ async function timedQuery(query, label, timeoutMs = QUERY_TIMEOUT_MS) {
 }
 // SPEC: purge runs at startup (cold start here) and at least daily (pg_cron job).
 const startupPurge = timedQuery(sql`select ${T("purge")}(${RETENTION_DAYS})`, "startup_purge", 2000).catch((e)=>console.error("startup purge failed", e));
+// Attachments (v37): self-initializing storage. The table is created if
+// missing at cold start (fully idempotent), so no separate DDL step is
+// needed on deploy — the function brings its own table.
+const startupAttachmentDDL = (async ()=>{
+  try {
+    await timedQuery(sql`create schema if not exists ${sql.unsafe(TABLES_SCHEMA)}`, "attachment_ddl_schema", 5000);
+    await timedQuery(sql`
+      create table if not exists ${S("smith_attachments")} (
+        attachment_id text primary key,
+        thread_id     text not null,
+        uploaded_by   text not null,
+        name          text not null,
+        mime          text not null,
+        size_bytes    integer not null check (size_bytes >= 0),
+        sha256        text not null,
+        bytes         bytea not null,
+        created_at    timestamptz not null default now()
+      )`, "attachment_ddl_table", 5000);
+    await timedQuery(sql`create index if not exists smith_attachments_thread_idx on ${S("smith_attachments")} (thread_id)`, "attachment_ddl_idx1", 5000);
+    await timedQuery(sql`create index if not exists smith_attachments_created_idx on ${S("smith_attachments")} (created_at)`, "attachment_ddl_idx2", 5000);
+  } catch (e) {
+    console.error("attachment DDL failed", e);
+  }
+})();
+// Attachments (v37): sweep uploads older than 7 days that no surviving
+// message references. Referenced attachments live as long as their thread;
+// once the retention purge removes the last referencing message, the file
+// becomes an orphan and is collected by the sweep.
+async function runAttachmentSweep() {
+  try {
+    await timedQuery(sql`
+      delete from ${S("smith_attachments")} a
+      where a.created_at < now() - interval '7 days'
+        and not exists (
+          select 1 from ${T("messages")} m
+          where m.metadata->'attachments' @> jsonb_build_array(jsonb_build_object('attachment_id', a.attachment_id))
+        )`, "attachment_sweep", 4000);
+  } catch (e) {
+    console.error("attachment sweep failed", e);
+  }
+}
+const startupAttachmentSweep = startupAttachmentDDL.then(()=>runAttachmentSweep());
+// P3-3: also sweep periodically in long-lived isolates (best-effort — cold
+// starts and deploys always re-run it). The timer is unref'd where the
+// runtime supports it so it never holds a process open on its own.
+try {
+  if (typeof setInterval === "function") {
+    const sweepTimer = setInterval(()=>{ runAttachmentSweep(); }, 24 * 60 * 60 * 1000) as unknown as { unref?: () => void };
+    if (sweepTimer && typeof sweepTimer.unref === "function") sweepTimer.unref();
+  }
+} catch { /* timer unsupported here: the cold-start sweep still applies */ }
 // ---- ULID (Crockford base32, 48-bit time + 80-bit random) -------------------
 const C32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 function ulid(now = Date.now()) {
@@ -245,16 +303,25 @@ async function rateLimit(auth) {
 }
 function validAttachments(a) {
   if (!Array.isArray(a)) return "metadata.attachments must be an array";
+  if (a.length > ATTACHMENT_MAX_PER_MESSAGE) return `metadata.attachments must have at most ${ATTACHMENT_MAX_PER_MESSAGE} entries`;
   for (const [i, x] of a.entries()){
     if (typeof x !== "object" || x === null || Array.isArray(x)) return `attachments[${i}] must be an object`;
     const o = x;
     if (typeof o.name !== "string" || o.name.length === 0) return `attachments[${i}].name is required`;
-    if (typeof o.url !== "string") return `attachments[${i}].url is required`;
-    try {
-      const p = new URL(o.url).protocol;
-      if (p !== "https:" && p !== "http:") return `attachments[${i}].url must be http(s)`;
-    } catch  {
-      return `attachments[${i}].url must be a valid URL`;
+    if (typeof o.attachment_id === "string" && o.attachment_id.length > 0) {
+      // Server-hosted attachment: the id is resolved by postMessage, which
+      // stamps the canonical url/mime/size. A client-supplied url alongside
+      // an id is rejected — the server is the source of truth.
+      if (!ATTACHMENT_ID_RE.test(o.attachment_id)) return `attachments[${i}].attachment_id is malformed`;
+      if (o.url !== undefined) return `attachments[${i}]: url is server-filled when attachment_id is present`;
+    } else {
+      if (typeof o.url !== "string") return `attachments[${i}].url is required`;
+      try {
+        const p = new URL(o.url).protocol;
+        if (p !== "https:" && p !== "http:") return `attachments[${i}].url must be http(s)`;
+      } catch  {
+        return `attachments[${i}].url must be a valid URL`;
+      }
     }
     if (o.mime !== undefined && o.mime !== null && typeof o.mime !== "string") return `attachments[${i}].mime must be a string`;
     if (o.size !== undefined && o.size !== null && !(Number.isInteger(o.size) && o.size >= 0)) {
@@ -374,6 +441,14 @@ async function postMessage(req, auth) {
     if (err) return jres(422, {
       error: err
     });
+    // Server-hosted refs: resolve attachment_ids against the thread being
+    // posted to, stamping the canonical url/mime/size/sha256. External URLs
+    // pass through unchanged (existing behavior).
+    const resolved = await resolveAttachmentRefs(req, metadata.attachments, body.thread_id);
+    if (resolved.error) return jres(resolved.status ?? 422, {
+      error: resolved.error
+    });
+    metadata.attachments = resolved.attachments;
   }
   if (body.type === "activity") {
     const aerr = validActivity(metadata.activity);
@@ -454,13 +529,13 @@ async function postMessage(req, auth) {
       });
     } else if (!await isThreadMember(auth, body.thread_id)) {
       return jres(403, {
-        error: "not a thread member"
+        error: "thread not found or you are not a member"
       });
     }
   } else if (auth.kind === "agent") {
     // Agents write only threads they belong to; new threads are born via POST /v1/threads.
     return jres(403, {
-      error: "not a thread member"
+      error: "thread not found or you are not a member"
     });
   }
   let idemKey = null;
@@ -555,7 +630,7 @@ async function getMessagesInner(req, arrivedAt, auth) {
   if (threadId && auth.kind === "agent") {
     if (!await isManagedThread(threadId) || !await isThreadMember(auth, threadId)) {
       return jres(403, {
-        error: "not a thread member"
+        error: "thread not found or you are not a member"
       });
     }
   }
@@ -830,7 +905,7 @@ async function getThreads(req) {
 // Identity, pairing, thread ACLs, working-on-reply activity, owner audit.
 // Additive on SPEC v1.1: every v1.1 route keeps its path, fields, and status
 // codes for legacy callers. New routes live under the same /v1/ prefix.
-const SMITH_VERSION = "1.0";
+const SMITH_VERSION = "1.1"; // v37: attachments (POST/GET/DELETE /v1/attachments)
 const OWNER_ID = "owner";
 const WAKECHECK_LIKE = "th\\_wakecheck\\_%"; // canary threads: never listed, counted or pushed for the owner
 const MENTION_OWNER_PER_HOUR = Number(Deno.env.get("SMITH_MENTION_OWNER_PER_HOUR") ?? 20);
@@ -1029,7 +1104,7 @@ async function threadAccess(auth, threadId) {
     });
   }
   if (!await isThreadMember(auth, threadId)) return jres(403, {
-    error: "not a thread member"
+    error: "thread not found or you are not a member"
   });
   return null;
 }
@@ -1345,6 +1420,89 @@ function avatarMime(b) {
   if (b.length > 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
   return null;
 }
+// ---- attachments (v37) --------------------------------------------------------
+// Content sniffing for the approved attachment formats. Magic bytes decide
+// binary types; the filename extension must agree with the sniffed type.
+// Text types must decode as strict UTF-8; JSON must additionally parse.
+// Returns the canonical MIME type, or null when the content is not allowed.
+function attachmentMime(buf: Uint8Array, name: string) {
+  const ext = (String(name).split(".").pop() ?? "").toLowerCase();
+  const isPng = buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  const isJpeg = buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  const isPdf = buf.length > 5 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46 && buf[4] === 0x2d; // %PDF-
+  if (isPng) return ext === "png" ? "image/png" : null;
+  if (isJpeg) return ext === "jpg" || ext === "jpeg" ? "image/jpeg" : null;
+  if (isPdf) return ext === "pdf" ? "application/pdf" : null;
+  // No binary magic: only the text formats remain, chosen by extension.
+  if (ext !== "txt" && ext !== "csv" && ext !== "json") return null;
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    return null;
+  }
+  if (ext === "json") {
+    try {
+      JSON.parse(text.replace(/^\uFEFF/, ""));
+    } catch {
+      return null;
+    }
+    return "application/json";
+  }
+  return ext === "csv" ? "text/csv" : "text/plain";
+}
+function validAttachmentName(n: unknown) {
+  if (typeof n !== "string" || n.length === 0) return "name query param is required";
+  if (n.length > 255) return "name must be at most 255 characters";
+  if (/[/\\\x00-\x1f\x7f]/.test(n)) return "name must not contain path separators or control characters";
+  if (!/\.(png|jpe?g|pdf|txt|csv|json)$/i.test(n)) return "name must end with a supported extension (.png, .jpg, .jpeg, .pdf, .txt, .csv, .json)";
+  return null;
+}
+// P2-1: streaming body reader with a hard cap. The content-length header is
+// attacker-controlled and may lie (small header, huge body); arrayBuffer()
+// would load the entire body into memory. This reads chunk-by-chunk and
+// aborts (cancelling the stream) the moment the cap is exceeded, so a lying
+// client can never force more than cap+one-chunk bytes into RAM.
+async function readCappedStream(stream: ReadableStream<Uint8Array> | null, cap: number): Promise<{ ok: true; buf: Uint8Array<ArrayBuffer> } | { ok: false; reason: "too_large" | "no_body" }> {
+  if (!stream) return { ok: false, reason: "no_body" };
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > cap) {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        return { ok: false, reason: "too_large" };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+  const buf: Uint8Array<ArrayBuffer> = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
+  return { ok: true, buf };
+}
+// Pinned instance URL (SMITH_INSTANCE_URL) preferred; the request-derived
+// origin is attacker-influenced behind a proxy, so it is only a fallback.
+function publicInstanceUrl(req: Request) {
+  const u = new URL(req.url);
+  const slugMatch = u.pathname.match(/^\/([^/]+)\/v1\//);
+  const derived = u.hostname.endsWith(".supabase.co")
+    ? `https://${u.hostname}/functions/v1/${slugMatch ? slugMatch[1] : "agentcollab"}`
+    : u.origin + u.pathname.replace(/\/v1\/.*$/, "").replace(/\/(cutout|agentcollab)$/, "");
+  return CONFIG_INSTANCE_URL || derived;
+}
+function attachmentUrl(attachmentId: string) {
+  // P3-4: the stamped url is a stable relative path. Clients resolve it
+  // against the instance URL they already use for API calls, so a change of
+  // SMITH_INSTANCE_URL (or any proxy/host move) never stales stamped metadata.
+  return "/v1/attachments/" + attachmentId;
+}
 async function threadAvatar(req, auth, threadId) {
   const denied = await threadAccess(auth, threadId);
   if (denied) return denied;
@@ -1381,6 +1539,142 @@ async function threadAvatar(req, auth, threadId) {
   await timedQuery(sql`insert into ${S("smith_thread_avatar")} (thread_id, mime, bytes, version) values (${threadId}, ${mime}, ${buf}, ${version})
     on conflict (thread_id) do update set mime = excluded.mime, bytes = excluded.bytes, version = excluded.version, updated_at = now()`, "avatar_set");
   return jres(200, { thread_id: threadId, avatar_version: version });
+}
+// ---- attachments (v37) --------------------------------------------------------
+// Private per-thread file storage. Upload binds a file to a thread; download
+// re-checks membership of that thread, so a file is never reachable outside
+// the thread it was shared in.
+async function uploadAttachment(req: Request, auth: any) {
+  if (auth.kind !== "agent" && auth.kind !== "owner") {
+    return jres(403, { error: "agent or owner token required" });
+  }
+  const q = new URL(req.url).searchParams;
+  const threadId = q.get("thread_id");
+  if (!threadId) return jres(422, { error: "thread_id query param is required" });
+  // P3-5: threadAccess -> isThreadMember returns true for auth.kind === "owner"
+  // (the owner is an implicit member of every thread), so an owner upload
+  // passes here on any thread. Verified, not just assumed.
+  const denied = await threadAccess(auth, threadId);
+  if (denied) return denied;
+  const rawName = q.get("name");
+  const nameErr = validAttachmentName(rawName);
+  if (nameErr) return jres(422, { error: nameErr });
+  const name = rawName as string; // validAttachmentName rejects null/empty above
+  const lenH = req.headers.get("content-length");
+  if (lenH === null) return jres(411, { error: "content-length required" });
+  const len = Number(lenH);
+  if (!Number.isFinite(len) || len > ATTACHMENT_MAX_BYTES) return jres(413, { error: "attachment exceeds 10 MB" });
+  const actor = auth.kind === "owner" ? OWNER_ID : auth.agentId;
+  const rl = await timedQuery(sql`select count(*)::int as n from ${S("smith_audit")} where action = 'attachment_upload' and actor = ${actor} and at > now() - interval '1 hour'`, "attachment_rate");
+  if (rl[0].n >= ATTACHMENT_UPLOAD_PER_HOUR) return jres(429, { error: "attachment upload limit reached, try again later" });
+  // P2-1: stream the body with a hard cap — the header check above is only a
+  // pre-filter; the header may lie, so the cap is enforced again per chunk.
+  const read = await readCappedStream(req.body, ATTACHMENT_MAX_BYTES);
+  if (!read.ok) return read.reason === "too_large"
+    ? jres(413, { error: "attachment exceeds 10 MB" })
+    : jres(422, { error: "file body required" });
+  const buf = read.buf;
+  if (buf.length === 0) return jres(422, { error: "file body required" });
+  const mime = attachmentMime(buf, name);
+  if (!mime) return jres(415, { error: "attachment must be png, jpeg, pdf, txt, csv or json" });
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  const sha256 = [...new Uint8Array(hash)].map((x: number)=> x.toString(16).padStart(2, "0")).join("");
+  const attId = "att_" + ulid();
+  await audit(actor, "attachment_upload", { attachment_id: attId, thread_id: threadId, name, mime, size: buf.length, sha256 });
+  await timedQuery(sql`insert into ${S("smith_attachments")} (attachment_id, thread_id, uploaded_by, name, mime, size_bytes, sha256, bytes)
+    values (${attId}, ${threadId}, ${actor}, ${name}, ${mime}, ${buf.length}, ${sha256}, ${buf})`, "attachment_insert");
+  return jres(201, {
+    attachment_id: attId,
+    thread_id: threadId,
+    name,
+    mime,
+    size: buf.length,
+    sha256,
+    url: attachmentUrl(attId)
+  });
+}
+// P2-2: deletion is blocked (409 Conflict) while any surviving message
+// references the attachment — deleting would leave a dangling ref that 404s
+// on download. History is append-only, so refs are never stripped; the file
+// lives until its last referencing message is purged, then the orphan sweep
+// collects it.
+function attachmentDeleteVerdict(isReferenced: boolean): { status: number; error: string } | null {
+  return isReferenced
+    ? { status: 409, error: "attachment is referenced by a message and cannot be deleted" }
+    : null;
+}
+async function attachmentIsReferenced(attId: string): Promise<boolean> {
+  // Note: the ref JSON is passed as a single jsonb parameter so Postgres can
+  // infer its type from the @> operator; jsonb_build_object('attachment_id',
+  // $1) cannot infer $1's type and errors at plan time.
+  const rows = await timedQuery(sql`
+    select 1 from ${T("messages")} m
+    where m.metadata->'attachments' @> ${sql.json([{ attachment_id: attId }])}
+    limit 1`, "attachment_ref_check");
+  return rows.length > 0;
+}
+async function attachmentRoute(req: Request, auth: any, attId: string) {
+  const rows = await timedQuery(sql`select attachment_id, thread_id, uploaded_by, name, mime, size_bytes, sha256, bytes from ${S("smith_attachments")} where attachment_id = ${attId}`, "attachment_get");
+  if (!rows.length) return jres(404, { error: "attachment not found" });
+  const a = rows[0];
+  const denied = await threadAccess(auth, a.thread_id);
+  if (denied) return denied;
+  if (req.method === "DELETE") {
+    const actor = auth.kind === "owner" ? OWNER_ID : auth.agentId;
+    if (auth.kind !== "owner" && a.uploaded_by !== auth.agentId) {
+      return jres(403, { error: "only the uploader or the owner can delete an attachment" });
+    }
+    const verdict = attachmentDeleteVerdict(await attachmentIsReferenced(attId));
+    if (verdict) return jres(verdict.status, { error: verdict.error });
+    await audit(actor, "attachment_delete", { attachment_id: attId, thread_id: a.thread_id });
+    await timedQuery(sql`delete from ${S("smith_attachments")} where attachment_id = ${attId}`, "attachment_delete");
+    return jres(200, { attachment_id: attId, deleted: true });
+  }
+  // GET: raw bytes. Auth-gated (thread membership checked above); the client
+  // fetches with its token and creates an object URL for preview.
+  const safeName = String(a.name).replace(/["\r\n]/g, "");
+  return new Response(a.bytes, {
+    status: 200,
+    headers: {
+      "content-type": a.mime,
+      "content-disposition": `attachment; filename="${safeName}"`,
+      "content-length": String(a.size_bytes),
+      "cache-control": "private, max-age=86400",
+      "x-content-type-options": "nosniff",
+      etag: `"${String(a.sha256).slice(0, 16)}"`
+    }
+  });
+}
+// Resolve server-hosted attachment refs in a message's metadata.attachments:
+// each attachment_id must exist AND be bound to the thread the message is
+// posted in (no cross-thread reference smuggling). The canonical
+// url/mime/size/sha256 are stamped server-side.
+async function resolveAttachmentRefs(req: Request, list: any[], threadId: string) {
+  const ids = list.filter((x: any)=> typeof x.attachment_id === "string").map((x: any)=> x.attachment_id);
+  const byId = new Map();
+  if (ids.length) {
+    const rows = await timedQuery(sql`select attachment_id, thread_id, name, mime, size_bytes, sha256 from ${S("smith_attachments")} where attachment_id = any(${ids})`, "attachment_resolve");
+    for (const r of rows) byId.set(r.attachment_id, r);
+  }
+  const out = [];
+  for (const x of list) {
+    if (typeof x.attachment_id !== "string") {
+      out.push(x);
+      continue;
+    }
+    const a = byId.get(x.attachment_id);
+    if (!a) return { error: `attachment not found: ${x.attachment_id}` };
+    if (a.thread_id !== threadId) return { error: `attachment ${x.attachment_id} is not in this thread`, status: 403 };
+    out.push({
+      attachment_id: a.attachment_id,
+      name: a.name,
+      url: attachmentUrl(a.attachment_id),
+      mime: a.mime,
+      size: a.size_bytes,
+      sha256: a.sha256
+    });
+  }
+  return { attachments: out };
 }
 async function ownerThreadPrefs(req, auth, threadId) {
   const denied = requireOwner(auth);
@@ -1526,25 +1820,59 @@ function parseFeedQuery(req) {
       })
     };
   }
+  // before=<cursor>: the page of messages immediately OLDER than that cursor
+  // (same cursor format as since), returned chronologically. Backs a client's
+  // "load earlier messages" after a latest=1 open. Exclusive with since.
+  let before = null;
+  const beforeRaw = u.searchParams.get("before");
+  if (beforeRaw) {
+    if (since) return {
+      error: jres(422, {
+        error: "since and before are mutually exclusive"
+      })
+    };
+    before = decodeCursor(beforeRaw);
+    if (!before) return {
+      error: jres(422, {
+        error: "invalid before cursor"
+      })
+    };
+  }
   return {
     limit,
     cursor,
-    since
+    since,
+    before,
+    // latest=1: return the newest limit messages (chronological order) for a
+    // client's initial thread open. Without it the feed pages from the oldest
+    // message, so threads longer than limit trickle the tail in one message
+    // at a time over the live stream. Ignored when a since cursor is given.
+    latest: u.searchParams.get("latest") === "1"
   };
 }
-async function feedMessages(threadId, cursor, limit, agentId) {
-  return await timedQuery(sql`
+async function feedMessages(threadId, cursor, limit, agentId, latest, before) {
+  // Backward mode (latest=1 with no since cursor, or any before cursor) reads
+  // newest-first, one extra row to learn whether older messages remain, then
+  // flips the page back to chronological order.
+  const desc = !cursor && (latest || !!before);
+  const rows = await timedQuery(sql`
     select id, thread_id, from_agent, to_agent, type, body, reply_to, created_at,
            (extract(epoch from created_at) * 1000000)::bigint as created_us, metadata
     from ${T("messages")} m
     where m.thread_id = ${threadId}
     ${agentId ? sql`and m.created_at >= coalesce((select tm.added_at from ${S("smith_thread_members")} tm where tm.thread_id = ${threadId} and tm.agent_id = ${agentId}), 'infinity'::timestamptz)` : sql``}
     ${cursor ? sql`and (((extract(epoch from m.created_at) * 1000000)::bigint > ${cursor.us}) or (((extract(epoch from m.created_at) * 1000000)::bigint = ${cursor.us}) and m.id > ${cursor.id}))` : sql``}
-    order by m.created_at asc, m.id asc
-    limit ${limit}`, "feed_query");
+    ${before ? sql`and (((extract(epoch from m.created_at) * 1000000)::bigint < ${before.us}) or (((extract(epoch from m.created_at) * 1000000)::bigint = ${before.us}) and m.id < ${before.id}))` : sql``}
+    ${desc ? sql`order by m.created_at desc, m.id desc` : sql`order by m.created_at asc, m.id asc`}
+    limit ${desc ? limit + 1 : limit}`, "feed_query");
+  if (!desc) return { rows, hasOlder: undefined };
+  const hasOlder = rows.length > limit;
+  if (hasOlder) rows.pop();
+  rows.reverse();
+  return { rows, hasOlder };
 }
 async function buildFeed(threadId, q, redactLabel, agentId) {
-  const rows = await feedMessages(threadId, q.cursor, q.limit, agentId);
+  const { rows, hasOlder } = await feedMessages(threadId, q.cursor, q.limit, agentId, q.latest, q.before);
   const messages = await enrichMessages(rows, redactLabel, agentId == null);
   // Working state is evaluated on read (expires_at > now()): a crashed agent's
   // dots clear within the TTL with no client timer to trust.
@@ -1552,6 +1880,12 @@ async function buildFeed(threadId, q, redactLabel, agentId) {
   return {
     messages,
     next_cursor: rows.length ? encodeCursor(Number(rows[rows.length - 1].created_us), rows[rows.length - 1].id) : q.since ?? null,
+    // Backward reads only: whether older messages exist, and the cursor to pass
+    // as before= for the next older page (the oldest message returned).
+    ...(hasOlder === undefined ? {} : {
+      has_older: hasOlder,
+      older_cursor: hasOlder && rows.length ? encodeCursor(Number(rows[0].created_us), rows[0].id) : null
+    }),
     working: wrows.map((r)=>({
         agent_id: r.agent_id,
         started_at: iso(r.started_at)
@@ -1651,7 +1985,20 @@ async function issuePairing(req, auth) {
   const existing = await timedQuery(sql`select revoked_at, token_hash from ${S("smith_agents")} where agent_id = ${aid}`, "pairing_agent");
   // "Already paired" means an active Smith token exists. Seeded legacy rows
   // (token_hash null) and revoked rows may be paired: issuing rotates in.
-  if (existing.length && existing[0].revoked_at === null && existing[0].token_hash !== null) return jres(409, {
+  const alreadyPaired = existing.length > 0 && existing[0].revoked_at === null && existing[0].token_hash !== null;
+  // force: owner-only token recovery. An already-paired agent normally gets
+  // 409 here; with force:true the owner may rotate a lost token in place
+  // instead of revoking (which deletes thread memberships/activity). Never
+  // a truthy check: only a real boolean true opts in.
+  let force = false;
+  if (body.force !== undefined && body.force !== null) {
+    if (typeof body.force !== "boolean") return jres(422, {
+      error: "force must be a boolean"
+    });
+    force = body.force;
+  }
+  const reissue = alreadyPaired && force;
+  if (alreadyPaired && !force) return jres(409, {
     error: "agent already paired"
   });
   const code = newPairingCode();
@@ -1663,6 +2010,14 @@ async function issuePairing(req, auth) {
     } else {
       await tx`insert into ${S("smith_agents")} (agent_id, display_name, platform) values (${aid}, ${body.display_name}, ${platform})`;
     }
+    // The agent's own owner<->agent DM thread, created at issue time so the
+    // invite can name a real thread id (not a made-up example). Deterministic
+    // id => idempotent across re-issues; membership is re-added if a revoke
+    // removed it. The agent has no token until redeem, so nothing is reachable yet.
+    await tx`insert into ${S("smith_threads")} (thread_id, name, created_by)
+             values (${dmThreadId(aid)}, ${body.display_name + " (DM)"}, ${OWNER_ID}) on conflict (thread_id) do nothing`;
+    await tx`insert into ${S("smith_thread_members")} (thread_id, agent_id, added_at)
+             values (${dmThreadId(aid)}, ${aid}, '-infinity'::timestamptz) on conflict (thread_id, agent_id) do nothing`;
     // P2-8: at most one live code per agent; re-issuing expires earlier ones.
     await tx`update ${S("smith_pairings")} set expires_at = now()
              where agent_id = ${aid} and redeemed_at is null and expires_at > now()`;
@@ -1671,12 +2026,14 @@ async function issuePairing(req, auth) {
   }), "pairing_issue", 3500);
   await audit(OWNER_ID, "issue_pairing", {
     pairing_id: pid,
-    agent_id: aid
+    agent_id: aid,
+    reissue
   });
   return jres(201, {
     pairing_id: pid,
     code: code.display,
     agent_id: aid,
+    dm_thread_id: dmThreadId(aid),
     expires_at: expiresAt.toISOString()
   });
 }
@@ -1700,6 +2057,10 @@ async function lockCodeIfNeeded(codeHash) {
   if (rows[0].c >= REDEEM_CODE_LOCKOUT_AFTER) {
     await timedQuery(sql`update ${S("smith_pairings")} set locked_at = now() where code_hash = ${codeHash} and locked_at is null`, "pairing_lock");
   }
+}
+// The owner<->agent DM thread id for an agent (see issuePairing).
+function dmThreadId(agentId) {
+  return "th_dm_" + agentId;
 }
 async function redeemPairing(req) {
   let body;
@@ -1753,20 +2114,22 @@ async function redeemPairing(req) {
   await audit(redeemed.agent_id, "redeem_pairing", {
     pairing_id: redeemed.id
   });
-  const u = new URL(req.url);
-  // P2-10: prefer a pinned instance URL from config; the request origin is
-  // attacker-influenced behind a proxy (Host header), so it is only a fallback.
-  // Default derivation: behind Supabase the function sees http://<ref>.supabase.co/<slug>/v1/...;
-  // the public URL is https://<ref>.supabase.co/functions/v1/<slug>.
-  const slugMatch = u.pathname.match(/^\/([^/]+)\/v1\//);
-  const derived = u.hostname.endsWith(".supabase.co")
-    ? `https://${u.hostname}/functions/v1/${slugMatch ? slugMatch[1] : "agentcollab"}`
-    : u.origin + u.pathname.replace(/\/v1\/.*$/, "").replace(/\/(cutout|agentcollab)$/, "");
-  const instanceUrl = CONFIG_INSTANCE_URL || derived;
+  const instanceUrl = publicInstanceUrl(req);
+  // Threads this agent can post to right now, so nobody has to guess an id.
+  const mine = await timedQuery(sql`
+    select t.thread_id, t.name from ${S("smith_thread_members")} tm
+    join ${S("smith_threads")} t on t.thread_id = tm.thread_id
+    where tm.agent_id = ${redeemed.agent_id} and tm.legacy_unverified = false
+    order by t.created_at asc, t.thread_id asc`, "pairing_threads");
   return jres(200, {
     agent_token: token,
     agent_id: redeemed.agent_id,
-    instance_url: instanceUrl
+    instance_url: instanceUrl,
+    threads: mine.map((r)=>({
+        thread_id: r.thread_id,
+        name: r.name
+      })),
+    dm_thread_id: mine.some((r)=>r.thread_id === dmThreadId(redeemed.agent_id)) ? dmThreadId(redeemed.agent_id) : null
   });
 }
 // One-time owner bootstrap: mints the instance's first owner token. Gated by
@@ -2195,6 +2558,9 @@ async function route(req, arrivedAt) {
     return done(await ownerFeed(req, auth, new URL(req.url).searchParams.get("thread_id")));
   }
   { const tv = path.match(/^\/v1\/threads\/([^/]+)\/avatar$/); if (tv && (req.method === "GET" || req.method === "PUT" || req.method === "DELETE")) return done(await threadAvatar(req, auth, decodeURIComponent(tv[1]))); }
+  // Attachments (v37): private per-thread file storage.
+  if (path === "/v1/attachments" && req.method === "POST") return done(await uploadAttachment(req, auth));
+  { const atm = path.match(/^\/v1\/attachments\/([^/]+)$/); if (atm && (req.method === "GET" || req.method === "DELETE")) return done(await attachmentRoute(req, auth, decodeURIComponent(atm[1]))); }
   { const am = path.match(/^\/v1\/messages\/([^/]+)\/activity$/); if (am && (req.method === "PATCH" || req.method === "PUT")) return done(await patchActivity(req, auth, decodeURIComponent(am[1]))); }
   { const rm = path.match(/^\/v1\/messages\/([^/]+)\/reactions(?:\/([^/]+))?$/);
     if (rm && ((!rm[2] && (req.method === "PUT" || req.method === "GET")) || (rm[2] && req.method === "DELETE"))) return done(await reactionsRoute(req, auth, decodeURIComponent(rm[1]), rm[2] ? decodeURIComponent(rm[2]) : null)); }
