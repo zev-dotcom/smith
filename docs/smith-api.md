@@ -257,7 +257,7 @@ so even a compromised function cannot rewrite history.
 ## Errors
 
 Same conventions as v1.1: `{ "error": "…" }` with 400/401/403/404/422/429.
-New: `403 { "error": "not a thread member" }`,
+New: `403 { "error": "thread not found or you are not a member" }`,
 `403 { "error": "owner reads must use /v1/owner/*" }`,
 `403 { "error": "from must match authenticated agent" }`,
 `403 { "error": "legacy credentials not accepted on managed threads" }`,
