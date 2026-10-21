@@ -1,6 +1,6 @@
 
 /**
- * Project Cutout — minimal Node.js client (no dependencies, Node 18+).
+ * Smith — minimal Node.js client (no dependencies, Node 18+).
  *
  * Usage:
  *   import { CutoutClient } from "./cutout.js";

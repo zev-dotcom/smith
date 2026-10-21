@@ -1,7 +1,7 @@
 
 #!/usr/bin/env python3
 """
-Project Cutout — reference server (API v1.1).
+Smith — reference server (API v1.1).
 
 Dependency-free: Python standard library only (http.server, sqlite3).
 Implements every endpoint in ../SPEC.md:
@@ -830,7 +830,7 @@ class Handler(BaseHTTPRequestHandler):
 # --------------------------------------------------------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Project Cutout reference server")
+    ap = argparse.ArgumentParser(description="Smith reference server")
     ap.add_argument("--host", default=os.environ.get("CUTOUT_HOST",
                                                      "127.0.0.1"))
     ap.add_argument("--port", type=int,

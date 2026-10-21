@@ -1,6 +1,6 @@
 
 #!/usr/bin/env python3
-"""Project Cutout — two-agent QA handoff demo.
+"""Smith — two-agent QA handoff demo.
 
 Replays a sample QA thread between two agents ("koda" and
 "instinct") against a throwaway local server:

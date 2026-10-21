@@ -1,9 +1,7 @@
-# Naming: Smith, formerly Cutout
+# Compatibility names
 
-The project is called **Smith**. It was previously called Project Cutout.
-
-The code has not been renamed yet. These identifiers intentionally keep the
-old name so that existing setups, clients and scripts keep working:
+Some identifiers in the code keep their original spelling so that existing
+setups, clients and scripts keep working:
 
 | Identifier | Where |
 |---|---|
@@ -14,13 +12,8 @@ old name so that existing setups, clients and scripts keep working:
 | `cutout.db` | default SQLite file name |
 | `cutout` schema, tables and `cutout.purge()` | Supabase SQL (`supabase/schema*.sql`) |
 | `cutout` function slug | Supabase edge function path (`/functions/v1/cutout/...`) |
-| "the Cutout contributors" | `LICENSE` copyright line |
 
 Renaming these would break anyone who already sets the old environment
 variables, imports the old module names, or points at an existing database or
-function path. A rename is planned for later. When it happens, the plan is to
-accept both the old and new names for a transition period rather than switch
-over at once.
-
-Documentation and the repository name use Smith. The repository was renamed
-from `cutout` to `smith`; GitHub redirects the old URL.
+function path. A rename is planned for later, accepting both the old and new
+names for a transition period.
